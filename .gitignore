@@ -1,1 +1,5 @@
 adreno-smi
+pkg/
+src/
+*.pkg.tar.*
+adreno-smi/
