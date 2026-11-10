@@ -21,21 +21,10 @@ libres pour n'importe quel usage, sans aucune obligation (pas même de citer l'a
 
 Sans root, seuls les processus de l'utilisateur sont visibles ; `sudo` pour tout voir.
 
-## waydroid-focus : libérer le GPU pour une appli Waydroid
+## Voir aussi
 
-Script bash qui lance une appli Android et la favorise tant qu'elle tourne :
-
-    ./waydroid-focus guitartuna              # alias de com.ovelin.guitartuna
-    ./waydroid-focus -n guitartuna           # simulation : n'écrit rien
-    ./waydroid-focus --gpu-max 500 --size 720x1560 guitartuna
-
-- gèle (SIGSTOP) les autres processus de l'utilisateur qui utilisent le GPU, sauf le bureau,
-  le terminal et Waydroid (`--keep REGEX` pour en protéger d'autres, `--no-freeze` pour désactiver) ;
-- côté Android : coupe les animations et arrête les applis en cache (`--no-android` pour désactiver) ;
-- en option : réduit la résolution (`--size`) et plafonne la fréquence max du GPU (`--gpu-max`, en MHz) ;
-- restaure tout à la fermeture de l'appli ou sur Ctrl+C (`--stop` arrête aussi la session Waydroid).
-
-Il demande `sudo` (shell Waydroid, fréquence GPU). Surveille l'effet avec `./adreno-smi -l 1`.
+[waydroid-focus](https://github.com/rakhenmanoa/waydroid-focus) : lanceur Waydroid qui libère le GPU pour une appli
+(à surveiller avec `./adreno-smi -l 1`).
 
 ## Sources des données
 
