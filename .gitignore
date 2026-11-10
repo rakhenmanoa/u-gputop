@@ -1,5 +1,6 @@
-adreno-smi
-pkg/
 src/
+pkg/
+adreno-smi-src/
 *.pkg.tar.*
-adreno-smi/
+*.log
+adreno-smi
