@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: 0BSD */
 /*
  * adreno-smi — moniteur GPU Adreno en ligne de commande, façon nvidia-smi.
  *

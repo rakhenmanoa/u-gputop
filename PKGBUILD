@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc="Moniteur GPU Adreno en ligne de commande façon nvidia-smi (fréquence, température, charge, processus)"
 arch=('aarch64' 'x86_64')
 url="https://github.com/rakhenmanoa/u-gputop"
-license=('unknown')
+license=('0BSD')
 depends=('glibc')
 makedepends=('git' 'gcc')
 source=("$pkgname::git+$url.git")
@@ -25,4 +25,5 @@ package() {
   cd "$srcdir/$pkgname"
   install -Dm755 adreno-smi "$pkgdir/usr/bin/adreno-smi"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

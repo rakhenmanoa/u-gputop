@@ -5,6 +5,11 @@ Cible : Xiaomi 12T Pro (diting) sous Linux avec le pilote DRM msm (Mesa freedren
 
 Affiche la fréquence, la température, la charge et les processus qui utilisent le GPU.
 
+## Licence
+
+[BSD Zero Clause (0BSD)](LICENSE) : utilisation, copie, modification et redistribution
+libres pour n'importe quel usage, sans aucune obligation (pas même de citer l'auteur).
+
 ## Compilation
 
     gcc -O2 -Wall -Wextra -o adreno-smi adreno-smi.c
