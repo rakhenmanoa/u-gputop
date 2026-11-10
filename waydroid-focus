@@ -1,0 +1,346 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: 0BSD
+#
+# waydroid-focus — lance une appli Android dans Waydroid en libérant le GPU et le
+# CPU pour elle, puis remet tout comme avant quand elle se ferme.
+#
+# Pendant que l'appli tourne :
+#   1. gèle (SIGSTOP) les autres processus de l'utilisateur qui utilisent le GPU
+#      (Firefox, etc.), sauf le bureau, le terminal et Waydroid ;
+#   2. côté Android : coupe les animations système et tue les applis en cache ;
+#   3. en option : réduit la résolution (--size) et plafonne la fréquence max du
+#      GPU (--gpu-max).
+# À la fermeture de l'appli, ou sur Ctrl+C, tout est restauré.
+#
+# Usage : waydroid-focus [options] <paquet|alias>
+#   alias : guitartuna = com.ovelin.guitartuna
+
+set -u
+
+PKG=""
+DRY=0
+FREEZE=1
+ANDROID=1
+GPUMAX=""
+SIZE=""
+STOP=0
+KEEP_EXTRA=()
+ROOT="${WF_ROOT:-}" # préfixe de /proc et /sys, pour les tests uniquement
+
+# Processus jamais gelés (nom de commande, regex étendue).
+KEEP_RE='^(kwin|plasma|startplasma|Xwayland|waydroid|lxc|sddm|systemd|pipewire|wireplumber|dbus|kded|ksmserver|kscreen|powerdevil|kglobalaccel|maliit|squeekboard|xdg-|polkit|bash$|sh$|zsh$|fish$|sudo$)'
+
+usage() {
+  cat <<'EOF'
+Usage : waydroid-focus [options] <paquet|alias>
+
+  alias : guitartuna = com.ovelin.guitartuna
+
+Options :
+  -n, --dry-run      affiche ce qui serait fait, sans rien modifier
+  --no-freeze        ne gèle pas les autres processus de l'hôte
+  --no-android       ne touche pas aux réglages Android (animations, applis en cache)
+  --gpu-max MHZ      plafonne la fréquence max du GPU pendant l'appli (ex. 500)
+  --size LxH         change la résolution Android pendant l'appli (ex. 720x1560)
+  --keep REGEX       nom de processus supplémentaire à ne jamais geler (répétable)
+  --stop             arrête la session Waydroid quand l'appli se ferme
+  -h, --help         cette aide
+EOF
+}
+
+say() { printf '%s\n' "$*"; }
+warn() { printf 'waydroid-focus : %s\n' "$*" >&2; }
+die() {
+  warn "$*"
+  exit 1
+}
+
+# ---------------------------------------------------------------- arguments
+while (($#)); do
+  case $1 in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  -n | --dry-run) DRY=1 ;;
+  --no-freeze) FREEZE=0 ;;
+  --no-android) ANDROID=0 ;;
+  --stop) STOP=1 ;;
+  --gpu-max)
+    shift
+    [[ ${1:-} =~ ^[0-9]+$ ]] || die "--gpu-max attend une valeur en MHz"
+    GPUMAX=$1
+    ;;
+  --size)
+    shift
+    [[ ${1:-} =~ ^[0-9]+x[0-9]+$ ]] || die "--size attend LARGEURxHAUTEUR (ex. 720x1560)"
+    SIZE=$1
+    ;;
+  --keep)
+    shift
+    [[ -n ${1:-} ]] || die "--keep attend une regex"
+    KEEP_EXTRA+=("$1")
+    ;;
+  -*) die "option inconnue : $1 (voir --help)" ;;
+  *)
+    [[ -z $PKG ]] || die "un seul paquet à la fois"
+    PKG=$1
+    ;;
+  esac
+  shift
+done
+
+[[ -n $PKG ]] || {
+  usage
+  exit 2
+}
+case $PKG in
+guitartuna | guitar-tuna) PKG=com.ovelin.guitartuna ;;
+esac
+
+command -v waydroid >/dev/null || ((DRY)) || die "waydroid introuvable"
+
+# ------------------------------------------------------- accès au shell Android
+WSH_MODE=""
+wsh_detect() {
+  local out
+  out=$(sudo waydroid shell -- sh -c 'echo ok' 2>/dev/null </dev/null)
+  if [[ $out == *ok* ]]; then
+    WSH_MODE=dashdash
+    return 0
+  fi
+  out=$(sudo waydroid shell sh -c 'echo ok' 2>/dev/null </dev/null)
+  if [[ $out == *ok* ]]; then
+    WSH_MODE=plain
+    return 0
+  fi
+  return 1
+}
+
+# wsh "commande android" : exécute dans le conteneur
+wsh() {
+  if ((DRY)); then
+    say "  [dry-run] (android) $1" >&2
+    return 0
+  fi
+  case $WSH_MODE in
+  dashdash) sudo waydroid shell -- sh -c "$1" </dev/null ;;
+  plain) sudo waydroid shell sh -c "$1" </dev/null ;;
+  *) return 1 ;;
+  esac
+}
+
+# ------------------------------------------------------------------ état
+ANIMS=(window_animation_scale transition_animation_scale animator_duration_scale)
+declare -A SAVED_ANIM=()
+FROZEN=()
+GPU_DIR=""
+GPU_MAX_SAVED=""
+SIZE_CHANGED=0
+ANDROID_DONE=0
+RESTORED=0
+
+# ------------------------------------------------------------- gel de l'hôte
+ANC=" "
+compute_ancestors() {
+  local p=$$
+  ANC=" "
+  while [[ -n $p && $p -gt 1 ]]; do
+    ANC+="$p "
+    p=$(sed 's/.*) //' "/proc/$p/stat" 2>/dev/null | awk '{print $2}')
+  done
+}
+
+freeze_others() {
+  compute_ancestors
+  local d pid comm x skip
+  for d in "$ROOT"/proc/[0-9]*; do
+    pid=${d##*/}
+    [[ $ANC == *" $pid "* ]] && continue
+    [[ -O $d ]] || continue
+    grep -qs '^drm-driver:[[:space:]]*msm' "$d"/fdinfo/* 2>/dev/null || continue
+    read -r comm <"$d/comm" 2>/dev/null || continue
+    [[ $comm =~ $KEEP_RE ]] && continue
+    skip=0
+    for x in "${KEEP_EXTRA[@]}"; do
+      [[ $comm =~ $x ]] && skip=1 && break
+    done
+    ((skip)) && continue
+    if ((DRY)); then
+      say "  [dry-run] gèlerait $comm ($pid)"
+    elif kill -STOP "$pid" 2>/dev/null; then
+      FROZEN+=("$pid:$comm")
+    fi
+  done
+  if ((DRY)); then
+    return
+  fi
+  if ((${#FROZEN[@]})); then
+    say "Gelés pendant l'appli : ${FROZEN[*]//:/ }"
+  else
+    say "Aucun autre processus GPU à geler."
+  fi
+}
+
+thaw_others() {
+  local e
+  for e in "${FROZEN[@]}"; do
+    kill -CONT "${e%%:*}" 2>/dev/null
+  done
+  if ((${#FROZEN[@]})); then
+    say "Relancés : ${FROZEN[*]//:/ }"
+  fi
+  FROZEN=()
+}
+
+# ------------------------------------------------------------ côté Android
+android_apply() {
+  local k v
+  if ! ((DRY)) && ! wsh_detect; then
+    warn "shell Waydroid inaccessible : réglages Android ignorés"
+    return
+  fi
+  for k in "${ANIMS[@]}"; do
+    v=$(wsh "settings get global $k" | tr -d '\r')
+    SAVED_ANIM[$k]=${v:-null}
+    wsh "settings put global $k 0"
+  done
+  wsh "am kill-all"
+  if [[ -n $SIZE ]]; then
+    wsh "wm size $SIZE"
+    SIZE_CHANGED=1
+  fi
+  ANDROID_DONE=1
+  say "Android : animations coupées, applis en cache arrêtées${SIZE:+, résolution $SIZE}."
+}
+
+android_restore() {
+  ((ANDROID_DONE)) || return 0
+  local k v
+  for k in "${ANIMS[@]}"; do
+    v=${SAVED_ANIM[$k]:-null}
+    [[ $v == null ]] && v=1.0
+    wsh "settings put global $k $v"
+  done
+  ((SIZE_CHANGED)) && wsh "wm size reset"
+  ANDROID_DONE=0
+}
+
+# -------------------------------------------------------------------- GPU
+gpu_dir() {
+  local d
+  for d in "$ROOT"/sys/class/devfreq/*; do
+    case ${d##*/} in
+    *gpu* | *adreno*)
+      echo "$d"
+      return
+      ;;
+    esac
+  done
+}
+
+gpu_cap() {
+  GPU_DIR=$(gpu_dir)
+  if [[ -z $GPU_DIR ]]; then
+    warn "devfreq GPU introuvable : --gpu-max ignoré"
+    return
+  fi
+  GPU_MAX_SAVED=$(<"$GPU_DIR/max_freq")
+  local hz=$((GPUMAX * 1000000))
+  if ((DRY)); then
+    say "  [dry-run] max_freq GPU : $GPU_MAX_SAVED -> $hz"
+    GPU_MAX_SAVED=""
+    return
+  fi
+  if echo "$hz" | sudo tee "$GPU_DIR/max_freq" >/dev/null; then
+    say "GPU plafonné à ${GPUMAX} MHz."
+  else
+    warn "impossible d'écrire max_freq"
+    GPU_MAX_SAVED=""
+  fi
+}
+
+gpu_restore() {
+  [[ -n $GPU_MAX_SAVED ]] || return 0
+  echo "$GPU_MAX_SAVED" | sudo tee "$GPU_DIR/max_freq" >/dev/null
+  say "Fréquence max du GPU restaurée."
+  GPU_MAX_SAVED=""
+}
+
+# --------------------------------------------------------------- restauration
+restore() {
+  ((RESTORED)) && return
+  RESTORED=1
+  thaw_others
+  android_restore
+  gpu_restore
+  if ((STOP)) && ! ((DRY)); then
+    say "Arrêt de la session Waydroid."
+    waydroid session stop >/dev/null 2>&1
+  fi
+}
+trap restore EXIT
+trap 'exit 130' INT TERM
+
+# ------------------------------------------------------------------- session
+session_running() {
+  waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'
+}
+
+if ! ((DRY)); then
+  sudo -v || die "sudo est nécessaire (shell Waydroid, fréquence GPU)"
+  if ! session_running; then
+    say "Démarrage de la session Waydroid…"
+    nohup waydroid session start >/dev/null 2>&1 &
+    for _ in $(seq 1 30); do
+      sleep 1
+      session_running && break
+    done
+    session_running || die "la session Waydroid ne démarre pas"
+  fi
+fi
+
+# ------------------------------------------------------------------ application
+((FREEZE)) && freeze_others
+((ANDROID)) && android_apply
+[[ -n $GPUMAX ]] && gpu_cap
+
+say "Lancement de $PKG…"
+if ((DRY)); then
+  say "  [dry-run] waydroid app launch $PKG"
+  say "  [dry-run] attente de la fermeture de l'appli, puis restauration"
+  exit 0
+fi
+waydroid app launch "$PKG" || die "échec du lancement de $PKG"
+
+# --------------------------------------------------------------------- attente
+app_running() {
+  local out
+  out=$(wsh "pidof $PKG" 2>/dev/null | tr -d '\r')
+  [[ $out =~ ^[0-9]+ ]]
+}
+
+if [[ -z $WSH_MODE ]]; then
+  # pas de shell Android : on ne peut pas suivre l'appli, on attend la touche Entrée
+  say "Appuie sur Entrée quand tu as fini avec l'appli."
+  read -r _
+  exit 0
+fi
+
+started=0
+for _ in $(seq 1 20); do
+  if app_running; then
+    started=1
+    break
+  fi
+  sleep 2
+done
+((started)) || die "l'appli ne s'est pas lancée (restauration)"
+
+say "Appli en cours. Ferme-la ou fais Ctrl+C pour tout restaurer."
+miss=0
+while ((miss < 2)); do
+  sleep 3
+  if app_running; then miss=0; else miss=$((miss + 1)); fi
+done
+say "Appli fermée."

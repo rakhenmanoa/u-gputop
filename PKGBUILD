@@ -6,7 +6,8 @@ pkgdesc="Moniteur GPU Adreno en ligne de commande façon nvidia-smi (fréquence,
 arch=('aarch64' 'x86_64')
 url="https://github.com/rakhenmanoa/u-gputop"
 license=('0BSD')
-depends=('glibc')
+depends=('glibc' 'bash' 'sudo')
+optdepends=('waydroid: pour waydroid-focus')
 makedepends=('git' 'gcc')
 source=("$pkgname::git+$url.git")
 sha256sums=('SKIP')
@@ -24,6 +25,7 @@ build() {
 package() {
   cd "$srcdir/$pkgname"
   install -Dm755 adreno-smi "$pkgdir/usr/bin/adreno-smi"
+  install -Dm755 waydroid-focus "$pkgdir/usr/bin/waydroid-focus"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
