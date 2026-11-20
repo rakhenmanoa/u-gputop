@@ -558,9 +558,10 @@ static void on_sig(int s)
 static void usage(const char *p)
 {
     printf("adreno-smi %s — moniteur GPU Adreno (pilote msm)\n\n"
-           "Usage : %s [-l [SEC]] [-h] [-V]\n\n"
+           "Usage : %s [-l [SEC] | -w [SEC]] [-h] [-V]\n\n"
            "  (sans option)  un seul affichage (mesure sur 0,5 s)\n"
-           "  -l, --loop [SEC]  rafraichit toutes les SEC secondes (1 par defaut), Ctrl+C pour quitter\n"
+           "  -l, --loop [SEC]   rafraichit toutes les SEC secondes (1 par defaut), Ctrl+C pour quitter\n"
+           "  -w, --watch [SEC]  comme watch(1) : rafraichit toutes les SEC secondes (0,5 par defaut)\n"
            "  -h, --help     cette aide\n"
            "  -V, --version  version\n",
            VERSION, p);
@@ -576,8 +577,10 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "-V") || !strcmp(argv[i], "--version")) {
             puts("adreno-smi " VERSION);
             return 0;
-        } else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--loop")) {
-            interval = 1;
+        } else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--loop") ||
+                   !strcmp(argv[i], "-w") || !strcmp(argv[i], "--watch")) {
+            /* -l : 1 s par defaut ; -w (comme watch) : 0,5 s par defaut */
+            interval = (argv[i][1] == 'w' || argv[i][2] == 'w') ? 0.5 : 1;
             if (i + 1 < argc) {
                 char *e;
                 double v = strtod(argv[i + 1], &e);

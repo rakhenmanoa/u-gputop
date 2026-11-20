@@ -18,6 +18,8 @@ libres pour n'importe quel usage, sans aucune obligation (pas même de citer l'a
 
     ./adreno-smi          # un seul affichage
     ./adreno-smi -l 1     # rafraîchit chaque seconde (Ctrl+C pour quitter)
+    ./adreno-smi -w       # façon `watch` : rafraîchit toutes les 0,5 s
+    ./adreno-smi -w 2     # façon `watch` : rafraîchit toutes les 2 s
 
 Sans root, seuls les processus de l'utilisateur sont visibles ; `sudo` pour tout voir.
 
